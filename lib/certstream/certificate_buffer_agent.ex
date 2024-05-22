@@ -12,6 +12,7 @@ defmodule Certstream.CertifcateBuffer do
   @doc "Starts the CertificateBuffer agent and creates an ETS table for tracking the certificates processed"
   def start_link(_opts) do
     Logger.info("Starting #{__MODULE__}...")
+
     Agent.start_link(
       fn ->
         :ets.new(:counter, [:named_table, :public])
@@ -43,10 +44,11 @@ defmodule Certstream.CertifcateBuffer do
 
   @doc "Gets the latest certificate seen by Certstream, indented with 4 spaces"
   def get_example_json do
-    Agent.get(__MODULE__,
+    Agent.get(
+      __MODULE__,
       fn certificates ->
         certificates
-        |> List.first
+        |> List.first()
         |> Jason.encode!(pretty: true)
       end
     )
@@ -54,7 +56,8 @@ defmodule Certstream.CertifcateBuffer do
 
   @doc "Gets the latest 25 cetficiates seen by Certstream, indented with 4 spaces"
   def get_latest_json do
-    Agent.get(__MODULE__,
+    Agent.get(
+      __MODULE__,
       fn certificates ->
         %{}
         |> Map.put(:messages, certificates)

@@ -18,7 +18,7 @@ defmodule Certstream.ClientManager do
   def add_client(client_pid, client_state) do
     {:ok, box_pid} = :pobox.start_link(client_pid, 500, :queue)
 
-    :pobox.active(box_pid, fn(msg, _) -> {{:ok, msg}, :nostate} end, :nostate)
+    :pobox.active(box_pid, fn msg, _ -> {{:ok, msg}, :nostate} end, :nostate)
 
     Agent.update(
       __MODULE__,
@@ -45,56 +45,62 @@ defmodule Certstream.ClientManager do
   end
 
   def get_client_count do
-    Agent.get(__MODULE__, fn state -> state |> Map.keys |> length end)
+    Agent.get(__MODULE__, fn state -> state |> Map.keys() |> length end)
   end
 
   def get_clients_json do
     Agent.get(__MODULE__, fn state ->
-
       state
-        |> Enum.map(fn {k, v} ->
-          coerced_payload = v
-                            |> Map.update!(:connect_time, &DateTime.to_iso8601/1)
-                            |> Map.drop([:po_box, :is_websocket])
-          {inspect(k), coerced_payload}
-        end)
-        |> Enum.into(%{})
+      |> Enum.map(fn {k, v} ->
+        coerced_payload =
+          v
+          |> Map.update!(:connect_time, &DateTime.to_iso8601/1)
+          |> Map.drop([:po_box, :is_websocket])
+
+        {inspect(k), coerced_payload}
+      end)
+      |> Enum.into(%{})
     end)
   end
 
   def broadcast_to_clients(entries) do
     Logger.debug(fn -> "Broadcasting #{length(entries)} certificates to clients" end)
 
-    certificates = entries
-                     |> Enum.map(&(%{:message_type => "certificate_update", :data => &1}))
+    certificates =
+      entries
+      |> Enum.map(&%{:message_type => "certificate_update", :data => &1})
 
-    serialized_certificates_full = certificates
-                                     |> Enum.map(&Jason.encode!/1)
+    serialized_certificates_full =
+      certificates
+      |> Enum.map(&Jason.encode!/1)
 
-    certificates_lite = certificates
-                          |> Enum.map(&remove_chain_from_cert/1)
-                          |> Enum.map(&remove_der_from_cert/1)
+    certificates_lite =
+      certificates
+      |> Enum.map(&remove_chain_from_cert/1)
+      |> Enum.map(&remove_der_from_cert/1)
 
     Certstream.CertifcateBuffer.add_certs_to_buffer(certificates_lite)
 
-    serialized_certificates_lite = certificates_lite
-                                     |> Enum.map(&Jason.encode!/1)
+    serialized_certificates_lite =
+      certificates_lite
+      |> Enum.map(&Jason.encode!/1)
 
-    dns_entries_only = certificates
-                         |> Enum.map(&get_in(&1, [:data, :leaf_cert, :all_domains]))
-                         |> Enum.map(fn dns_entries -> %{:message_type => "dns_entries", :data => dns_entries} end)
-                         |> Enum.map(&Jason.encode!/1)
+    dns_entries_only =
+      certificates
+      |> Enum.map(&get_in(&1, [:data, :leaf_cert, :all_domains]))
+      |> Enum.map(fn dns_entries -> %{:message_type => "dns_entries", :data => dns_entries} end)
+      |> Enum.map(&Jason.encode!/1)
 
     get_clients()
-      |> Enum.each(fn {_, client_state} ->
-        case client_state.path do
-          @full_stream_url ->         send_bundle(serialized_certificates_full, client_state.po_box)
-          @full_stream_url <> "/" ->  send_bundle(serialized_certificates_full, client_state.po_box)
-          @domains_only_url ->        send_bundle(dns_entries_only, client_state.po_box)
-          @domains_only_url <> "/" -> send_bundle(dns_entries_only, client_state.po_box)
-          _ ->                        send_bundle(serialized_certificates_lite, client_state.po_box)
-        end
-      end)
+    |> Enum.each(fn {_, client_state} ->
+      case client_state.path do
+        @full_stream_url -> send_bundle(serialized_certificates_full, client_state.po_box)
+        @full_stream_url <> "/" -> send_bundle(serialized_certificates_full, client_state.po_box)
+        @domains_only_url -> send_bundle(dns_entries_only, client_state.po_box)
+        @domains_only_url <> "/" -> send_bundle(dns_entries_only, client_state.po_box)
+        _ -> send_bundle(serialized_certificates_lite, client_state.po_box)
+      end
+    end)
   end
 
   def send_bundle(entries, po_box) do
@@ -103,14 +109,14 @@ defmodule Certstream.ClientManager do
 
   def remove_chain_from_cert(cert) do
     cert
-      |> pop_in([:data, :chain])
-      |> elem(1)
+    |> pop_in([:data, :chain])
+    |> elem(1)
   end
 
   def remove_der_from_cert(cert) do
     # Clean the der field from the leaf cert
     cert
-      |> pop_in([:data, :leaf_cert, :as_der])
-      |> elem(1)
+    |> pop_in([:data, :leaf_cert, :as_der])
+    |> elem(1)
   end
 end
