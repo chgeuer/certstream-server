@@ -44,6 +44,7 @@ WORKDIR /opt/app
 RUN tdnf -y install ca-certificates
 
 COPY --from=build /opt/app/_build/prod .
+COPY frontend/dist/ /opt/app/frontend/dist/
 
 EXPOSE 4000/tcp
 
