@@ -119,7 +119,7 @@ defmodule Certstream.CTWatcher do
 
         state
       rescue e ->
-        Logger.warn("Worker #{inspect self()} with state #{inspect state} blew up because #{inspect e}")
+        Logger.warning("Worker #{inspect self()} with state #{inspect state} blew up because #{inspect e}")
       end
 
     {:noreply, state}

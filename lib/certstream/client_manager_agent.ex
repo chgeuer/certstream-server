@@ -7,8 +7,8 @@ defmodule Certstream.ClientManager do
   """
   use Agent
 
-  @full_stream_url Application.fetch_env!(:certstream, :full_stream_url)
-  @domains_only_url Application.fetch_env!(:certstream, :domains_only_url)
+  @full_stream_url Application.compile_env!(:certstream, :full_stream_url)
+  @domains_only_url Application.compile_env!(:certstream, :domains_only_url)
 
   def start_link(_opts) do
     Logger.info("Starting #{__MODULE__}...")

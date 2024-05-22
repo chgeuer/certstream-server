@@ -9,22 +9,22 @@ defmodule Certstream.WebsocketServer do
   use Instruments
 
 
-  @full_stream_url Application.fetch_env!(:certstream, :full_stream_url)
-  @domains_only_url Application.fetch_env!(:certstream, :domains_only_url)
+  @full_stream_url Application.compile_env!(:certstream, :full_stream_url)
+  @domains_only_url Application.compile_env!(:certstream, :domains_only_url)
 
   # GenServer callback
   def init(args) do {:ok, args} end
 
   # /example.json handler
   def init(req, [:example_json]) do
-    res = :cowboy_req.reply(200, %{'content-type' => 'application/json'},
+    res = :cowboy_req.reply(200, %{~c"content-type" => ~c"application/json"},
                             Certstream.CertifcateBuffer.get_example_json(), req)
     {:ok, res, %{}}
   end
 
   # /latest.json handler
   def init(req, [:latest_json]) do
-    res = :cowboy_req.reply(200, %{'content-type' => 'application/json'},
+    res = :cowboy_req.reply(200, %{~c"content-type" => ~c"application/json"},
                             Certstream.CertifcateBuffer.get_latest_json(), req)
     {:ok, res, %{}}
   end
@@ -50,7 +50,7 @@ defmodule Certstream.WebsocketServer do
 
     res = :cowboy_req.reply(
       200,
-      %{'content-type' => 'application/json'},
+      %{~c"content-type" => ~c"application/json"},
       response,
       req
     )
@@ -78,7 +78,7 @@ defmodule Certstream.WebsocketServer do
       Instruments.increment("certstream.index_load", 1, tags: ["ip:#{state[:ip_address]}"])
       res = :cowboy_req.reply(
         200,
-        %{'content-type' => 'text/html'},
+        %{~c"content-type" => ~c"text/html"},
         File.read!("frontend/dist/index.html"),
         req
       )
@@ -110,7 +110,7 @@ defmodule Certstream.WebsocketServer do
   def websocket_info({:mail, box_pid, serialized_certificates, _message_count, message_drop_count}, state) do
     if message_drop_count > 0 do
       Instruments.increment("certstream.dropped_messages", message_drop_count, tags: ["ip:#{state[:ip_address]}"])
-      Logger.warn("Message drop count greater than 0 -> #{message_drop_count}")
+      Logger.warning("Message drop count greater than 0 -> #{message_drop_count}")
     end
 
     Logger.debug(fn -> "Sending client #{length(serialized_certificates |> List.flatten)} client frames" end)
@@ -148,7 +148,7 @@ defmodule Certstream.WebsocketServer do
                 {"/example.json", __MODULE__, [:example_json]},
                 {"/latest.json", __MODULE__, [:latest_json]},
                 {"/static/[...]", :cowboy_static, {:dir, "frontend/dist/static/"}},
-                {"/#{System.get_env(~s(STATS_URL)) || 'stats'}", __MODULE__, [:stats]}
+                {"/#{System.get_env(~s(STATS_URL)) || ~c"stats"}", __MODULE__, [:stats]}
               ]}
           ])
         },
