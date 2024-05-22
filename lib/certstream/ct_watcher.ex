@@ -13,15 +13,15 @@ defmodule Certstream.CTWatcher do
     [
       timeout: 10_000,
       recv_timeout: 10_000,
+      follow_redirect: true,
       ssl: [
         versions: [:"tlsv1.2"],
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        ]
-      ],
-      follow_redirect: true
+        # verify: :verify_peer,
+        # cacerts: :public_key.cacerts_get(),
+        # customize_hostname_check: [
+        #   match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        # ]
+      ]
     ]
   end
 

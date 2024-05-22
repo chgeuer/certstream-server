@@ -44,5 +44,8 @@ WORKDIR /opt/app
 RUN tdnf -y install ca-certificates
 
 COPY --from=build /opt/app/_build/prod .
+
+EXPOSE 80/tcp
+
 ENTRYPOINT ["./rel/app/bin/app"]
 CMD ["start"]
