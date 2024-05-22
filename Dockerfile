@@ -28,7 +28,7 @@ RUN tdnf -y install \
               "elixir-${ELIXIR_VERSION}.zip" \
               "elixir-${ELIXIR_VERSION}" 
 
-FROM mariner-elixir
+FROM mariner-elixir as build
 
 WORKDIR /opt/app
 
@@ -43,4 +43,15 @@ COPY frontend/dist/ /opt/app/frontend/dist/
 COPY config/        /opt/app/config/
 COPY lib            /opt/app/lib/
 
-CMD mix run --no-halt
+RUN MIX_ENV=prod mix release app
+
+FROM mcr.microsoft.com/cbl-mariner/base/core:2.0
+
+RUN tdnf -y install ca-certificates
+
+WORKDIR /opt/app
+
+COPY --from=build /opt/app/_build/prod .
+ENTRYPOINT ["./rel/app/bin/app"]
+CMD ["start"]
+
