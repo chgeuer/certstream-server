@@ -35,7 +35,9 @@ COPY frontend/dist/ /opt/app/frontend/dist/
 COPY config/        /opt/app/config/
 COPY lib            /opt/app/lib/
 
-RUN MIX_ENV=prod mix release app
+RUN MIX_ENV=prod \
+    LOG_LEVEL=info \
+    mix release app
 
 FROM mcr.microsoft.com/cbl-mariner/base/core:2.0
 
@@ -47,6 +49,7 @@ COPY --from=build /opt/app/_build/prod .
 COPY frontend/dist/ /opt/app/frontend/dist/
 
 EXPOSE 4000/tcp
+ENV PORT 4000
 
 ENTRYPOINT ["./rel/app/bin/app"]
 CMD ["start"]

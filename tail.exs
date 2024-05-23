@@ -12,8 +12,8 @@ Mix.install(
 defmodule WebSocketExample do
   use WebSockex
 
-  def start_link() do
-    WebSockex.start_link("http://localhost:4000/", __MODULE__, nil)
+  def start_link(url \\ "http://localhost:4000/") do
+    WebSockex.start_link(url, __MODULE__, nil)
   end
 
   def handle_frame({:text, msg}, state) do
@@ -50,8 +50,18 @@ defmodule WebSocketExample do
     IO.puts "Sending #{type} frame with payload: #{msg}"
     {:reply, frame, state}
   end
+
+  def start(url \\ "http://localhost:4000/") do
+    case __MODULE__.start_link(url) do
+      {:error, reason} ->
+        IO.puts("Not yet ready.... #{inspect reason}")
+        Process.sleep(500)
+        start(url)
+      {:ok, pid} -> {:ok, pid}
+    end
+  end
 end
 
-{:ok, _pid} = WebSocketExample.start_link()
+{:ok, _pid} = WebSocketExample.start()
 
 Process.sleep(:infinity)
