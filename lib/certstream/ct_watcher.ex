@@ -8,31 +8,6 @@ defmodule Certstream.CTWatcher do
   use Instruments
   require Logger
 
-  @default_http_options [
-    redirect: true,
-    max_redirects: 5,
-    connect_options: [
-      transport_opts: [
-        timeout: 10_000,
-        versions: [:"tlsv1.3", :"tlsv1.2"]
-      ]
-    ]
-  ]
-
-  defp req_new() do
-    Req.new()
-    |> Req.merge(@default_http_options)
-    |> Req.Request.put_header("User-Agent", user_agent())
-  end
-
-  # Allow the user agent to be overridden in the config, or use a default Certstream identifier
-  defp user_agent do
-    case Application.fetch_env!(:certstream, :user_agent) do
-      :default -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
-      other -> other
-    end
-  end
-
   def child_spec(log) do
     %{
       id: __MODULE__,
@@ -43,22 +18,21 @@ defmodule Certstream.CTWatcher do
 
   def start_and_link_watchers(name: supervisor_name) do
     Logger.info("Initializing CT Watchers...")
+
     # Fetch all CT lists
-    ctl_log_info =
+    %Req.Response{status: 200, body: %{"operators" => operators}} =
       req_new()
       |> Req.get!(url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json")
-      |> Map.get(:body)
 
-    ctl_log_info
-    |> Map.get("operators")
-    |> Enum.each(fn operator ->
-      operator
-      |> Map.get("logs")
-      |> Enum.each(fn log ->
-        log = Map.put(log, "operator_name", operator["name"])
-        DynamicSupervisor.start_child(supervisor_name, child_spec(log))
-      end)
+    operators
+    |> Enum.flat_map(fn %{"logs" => logs, "name" => operator_name} ->
+      Enum.map(logs, &Map.put(&1, "operator_name", operator_name))
     end)
+    |> Enum.filter(fn
+      %{"state" => %{"rejected" => _}} -> false
+      _ -> true
+    end)
+    |> Enum.each(&DynamicSupervisor.start_child(supervisor_name, child_spec(&1)))
   end
 
   def start_link(log) do
@@ -72,11 +46,10 @@ defmodule Certstream.CTWatcher do
     # Schedule the initial update to happen between 0 and 3 seconds from now in
     # order to stagger when we hit these servers and avoid a thundering herd sort
     # of issue upstream
-    delay = :rand.uniform(30) / 10
-
-    Logger.info(
-      "Worker #{inspect(self())} started with url #{state[:url]} and initial start time of #{delay} seconds from now."
-    )
+    # delay = :rand.uniform(30) / 10
+    # Logger.info(
+    #   "Worker #{inspect(self())} started with url #{state[:url]} and initial start time of #{delay} seconds from now."
+    # )
 
     {:ok, state, {:continue, :finish_init}}
   end
@@ -92,12 +65,11 @@ defmodule Certstream.CTWatcher do
 
     state =
       try do
-        batch_size =
+        %Req.Response{status: 200, body: %{"entries" => entries}} =
           req_new()
           |> Req.get!(url: "#{state[:url]}ct/v1/get-entries?start=0&end=511")
-          |> Map.get(:body)
-          |> Map.get("entries")
-          |> Enum.count()
+
+        batch_size = Enum.count(entries)
 
         Logger.info(
           "Worker #{inspect(self())} with url #{state[:url]} found batch size of #{batch_size}."
@@ -121,40 +93,12 @@ defmodule Certstream.CTWatcher do
     {:noreply, state}
   end
 
-  @spec http_request_with_retries(any()) :: any()
-  def http_request_with_retries(full_url, options \\ @default_http_options) do
-    # Go ask for the first 512 entries
-    Logger.info("Sending GET request to #{full_url}")
-
-    request =
-      req_new()
-
-    case Req.get(request, url: full_url) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
-        body
-
-      {:ok, response} ->
-        Logger.error(
-          "Unexpected status code #{response.status} fetching url #{full_url}! Sleeping for a bit and trying again..."
-        )
-
-        :timer.sleep(:timer.seconds(10))
-        http_request_with_retries(full_url, options)
-
-      {:error, %Req.TransportError{reason: reason}} ->
-        Logger.error(
-          "Error: #{inspect(reason)} while GETing #{full_url}! Sleeping for 10 seconds and trying again..."
-        )
-
-        :timer.sleep(:timer.seconds(10))
-        http_request_with_retries(full_url, options)
-    end
-  end
-
   def get_tree_size(state) do
-    "#{state[:url]}ct/v1/get-sth"
-    |> http_request_with_retries
-    |> Map.get("tree_size")
+    %Req.Response{status: 200, body: %{"tree_size" => tree_size}} =
+      req_new()
+      |> Req.get!(url: "#{state[:url]}ct/v1/get-sth")
+
+    tree_size
   end
 
   def handle_info({:ssl_closed, _}, state) do
@@ -219,10 +163,11 @@ defmodule Certstream.CTWatcher do
   def fetch_and_broadcast_certs(ids, state) do
     Logger.debug(fn -> "Attempting to retrieve #{ids |> Enum.count()} entries" end)
 
-    entries =
-      "#{state[:url]}ct/v1/get-entries?start=#{List.first(ids)}&end=#{List.last(ids)}"
-      |> http_request_with_retries
-      |> Map.get("entries", [])
+    %Req.Response{status: 200, body: %{"entries" => entries}} =
+      req_new()
+      |> Req.get!(
+        url: "#{state[:url]}ct/v1/get-entries?start=#{List.first(ids)}&end=#{List.last(ids)}"
+      )
 
     entries
     |> Enum.zip(ids)
@@ -263,5 +208,29 @@ defmodule Certstream.CTWatcher do
     # type put in, :erlang.send_after seems to hang with floats for some
     # reason :(
     Process.send_after(self(), :update, trunc(:timer.seconds(seconds)))
+  end
+
+  defp req_new() do
+    Req.new(
+      retry: :safe_transient,
+      retry_delay: 10_000,
+      redirect: true,
+      max_redirects: 5,
+      connect_options: [
+        transport_opts: [
+          timeout: 10_000,
+          versions: [:"tlsv1.3", :"tlsv1.2"]
+        ]
+      ]
+    )
+    |> Req.Request.put_header("User-Agent", user_agent())
+  end
+
+  # Allow the user agent to be overridden in the config, or use a default Certstream identifier
+  defp user_agent do
+    case Application.fetch_env!(:certstream, :user_agent) do
+      :default -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
+      other -> other
+    end
   end
 end
