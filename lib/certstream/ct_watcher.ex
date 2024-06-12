@@ -219,7 +219,10 @@ defmodule Certstream.CTWatcher do
       connect_options: [
         transport_opts: [
           timeout: 10_000,
-          versions: [:"tlsv1.3", :"tlsv1.2"]
+          versions: [
+            # :"tlsv1.3",
+            :"tlsv1.2"
+          ]
         ]
       ]
     )

@@ -2,7 +2,9 @@ FROM mcr.microsoft.com/cbl-mariner/base/core:2.0 as mariner-elixir
 
 WORKDIR /opt/app
 
-ENV OTP_VERSION="27.0" ELIXIR_VERSION="1.16.3"
+ENV OTP_VERSION="27.0" ELIXIR_VERSION="1.17.0"
+
+# https://github.com/elixir-lang/elixir/releases/download/v1.17.0/elixir-otp-27.zip
 
 RUN tdnf -y install ca-certificates \
     && tdnf -y install glibc-i18n build-essential make openssl-devel ncurses-devel git tar unzip \ 
