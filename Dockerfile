@@ -4,7 +4,8 @@ WORKDIR /opt/app
 
 ENV OTP_VERSION="27.0" ELIXIR_VERSION="1.16.3"
 
-RUN tdnf -y install ca-certificates glibc-i18n build-essential make openssl-devel ncurses-devel git tar unzip \ 
+RUN tdnf -y install ca-certificates \
+    && tdnf -y install glibc-i18n build-essential make openssl-devel ncurses-devel git tar unzip \ 
     && locale-gen.sh \
     && OTP_DOWNLOAD_URL="https://github.com/erlang/otp/archive/OTP-${OTP_VERSION}.tar.gz" \
     && curl --fail --show-error --location --output "otp-OTP-${OTP_VERSION}.tar.gz" --url "$OTP_DOWNLOAD_URL" \

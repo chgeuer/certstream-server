@@ -1,5 +1,3 @@
-require Logger
-
 defmodule Certstream.CTWatcher do
   @moduledoc """
   The GenServer responsible for watching a specific CT server. It ticks every 15 seconds via
@@ -8,21 +6,31 @@ defmodule Certstream.CTWatcher do
   """
   use GenServer
   use Instruments
+  require Logger
 
-  defp default_http_options() do
-    [
-      timeout: 10_000,
-      recv_timeout: 10_000,
-      follow_redirect: true,
-      ssl: [
-        versions: [:"tlsv1.2"],
-        # verify: :verify_peer,
-        # cacerts: :public_key.cacerts_get(),
-        # customize_hostname_check: [
-        #   match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        # ]
+  @default_http_options [
+    redirect: true,
+    max_redirects: 5,
+    connect_options: [
+      transport_opts: [
+        timeout: 10_000,
+        versions: [:"tlsv1.3", :"tlsv1.2"]
       ]
     ]
+  ]
+
+  defp req_new() do
+    Req.new()
+    |> Req.merge(@default_http_options)
+    |> Req.Request.put_header("User-Agent", user_agent())
+  end
+
+  # Allow the user agent to be overridden in the config, or use a default Certstream identifier
+  defp user_agent do
+    case Application.fetch_env!(:certstream, :user_agent) do
+      :default -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
+      other -> other
+    end
   end
 
   def child_spec(log) do
@@ -37,10 +45,9 @@ defmodule Certstream.CTWatcher do
     Logger.info("Initializing CT Watchers...")
     # Fetch all CT lists
     ctl_log_info =
-      "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json"
-      |> HTTPoison.get!([], default_http_options())
+      req_new()
+      |> Req.get!(url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json")
       |> Map.get(:body)
-      |> Jason.decode!()
 
     ctl_log_info
     |> Map.get("operators")
@@ -71,58 +78,14 @@ defmodule Certstream.CTWatcher do
       "Worker #{inspect(self())} started with url #{state[:url]} and initial start time of #{delay} seconds from now."
     )
 
-    send(self(), :init)
-
-    {:ok, state}
+    {:ok, state, {:continue, :finish_init}}
   end
 
-  def http_request_with_retries(full_url, options \\ :missing_options) do
-    options =
-      case options do
-        :missing_options -> default_http_options()
-        x -> x
-      end
-
-    # Go ask for the first 512 entries
-    Logger.info("Sending GET request to #{full_url}")
-
-    user_agent = {"User-Agent", user_agent()}
-
-    case HTTPoison.get(full_url, [user_agent], options) do
-      {:ok, %HTTPoison.Response{status_code: 200} = response} ->
-        response.body
-        |> Jason.decode!()
-
-      {:ok, response} ->
-        Logger.error(
-          "Unexpected status code #{response.status_code} fetching url #{full_url}! Sleeping for a bit and trying again..."
-        )
-
-        :timer.sleep(:timer.seconds(10))
-        http_request_with_retries(full_url, options)
-
-      {:error, %HTTPoison.Error{reason: reason}} ->
-        Logger.error(
-          "Error: #{inspect(reason)} while GETing #{full_url}! Sleeping for 10 seconds and trying again..."
-        )
-
-        :timer.sleep(:timer.seconds(10))
-        http_request_with_retries(full_url, options)
-    end
-  end
-
-  def get_tree_size(state) do
-    "#{state[:url]}ct/v1/get-sth"
-    |> http_request_with_retries
-    |> Map.get("tree_size")
-  end
-
-  def handle_info({:ssl_closed, _}, state) do
-    Logger.info("Worker #{inspect(self())} got :ssl_closed message. Ignoring.")
-    {:noreply, state}
-  end
-
-  def handle_info(:init, state) do
+  @spec handle_continue(:finish_init, any()) ::
+          {:noreply,
+           :ok
+           | %{:batch_size => non_neg_integer(), :tree_size => any(), optional(any()) => any()}}
+  def handle_continue(:finish_init, state) do
     # On first run attempt to fetch 512 certificates, and see what the API returns. However
     # many certs come back is what we should use as the batch size moving forward (at least
     # in theory).
@@ -130,10 +93,9 @@ defmodule Certstream.CTWatcher do
     state =
       try do
         batch_size =
-          "#{state[:url]}ct/v1/get-entries?start=0&end=511"
-          |> HTTPoison.get!([], default_http_options())
+          req_new()
+          |> Req.get!(url: "#{state[:url]}ct/v1/get-entries?start=0&end=511")
           |> Map.get(:body)
-          |> Jason.decode!()
           |> Map.get("entries")
           |> Enum.count()
 
@@ -156,6 +118,47 @@ defmodule Certstream.CTWatcher do
           )
       end
 
+    {:noreply, state}
+  end
+
+  @spec http_request_with_retries(any()) :: any()
+  def http_request_with_retries(full_url, options \\ @default_http_options) do
+    # Go ask for the first 512 entries
+    Logger.info("Sending GET request to #{full_url}")
+
+    request =
+      req_new()
+
+    case Req.get(request, url: full_url) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        body
+
+      {:ok, response} ->
+        Logger.error(
+          "Unexpected status code #{response.status} fetching url #{full_url}! Sleeping for a bit and trying again..."
+        )
+
+        :timer.sleep(:timer.seconds(10))
+        http_request_with_retries(full_url, options)
+
+      {:error, %Req.TransportError{reason: reason}} ->
+        Logger.error(
+          "Error: #{inspect(reason)} while GETing #{full_url}! Sleeping for 10 seconds and trying again..."
+        )
+
+        :timer.sleep(:timer.seconds(10))
+        http_request_with_retries(full_url, options)
+    end
+  end
+
+  def get_tree_size(state) do
+    "#{state[:url]}ct/v1/get-sth"
+    |> http_request_with_retries
+    |> Map.get("tree_size")
+  end
+
+  def handle_info({:ssl_closed, _}, state) do
+    Logger.info("Worker #{inspect(self())} got :ssl_closed message. Ignoring.")
     {:noreply, state}
   end
 
@@ -260,13 +263,5 @@ defmodule Certstream.CTWatcher do
     # type put in, :erlang.send_after seems to hang with floats for some
     # reason :(
     Process.send_after(self(), :update, trunc(:timer.seconds(seconds)))
-  end
-
-  # Allow the user agent to be overridden in the config, or use a default Certstream identifier
-  defp user_agent do
-    case Application.fetch_env!(:certstream, :user_agent) do
-      :default -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
-      user_agent_override -> user_agent_override
-    end
   end
 end

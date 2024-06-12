@@ -1,5 +1,3 @@
-require Logger
-
 defmodule Certstream.WebsocketServer do
   @moduledoc """
   The main web services GenServer, responsible for spinning up cowboy and encapsulates
@@ -7,6 +5,7 @@ defmodule Certstream.WebsocketServer do
   """
   use GenServer
   use Instruments
+  require Logger
 
   @full_stream_url Application.compile_env!(:certstream, :full_stream_url)
   @domains_only_url Application.compile_env!(:certstream, :domains_only_url)

@@ -1,8 +1,7 @@
-require Logger
-
 defmodule Certstream.CertifcateBuffer do
   use Agent
   use Instruments
+  require Logger
 
   @moduledoc """
     An agent designed to ring-buffer certificate updates as they come in so the most recent 25 certificates can be

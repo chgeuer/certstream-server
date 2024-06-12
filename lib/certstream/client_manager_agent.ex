@@ -1,11 +1,10 @@
-require Logger
-
 defmodule Certstream.ClientManager do
   @moduledoc """
   An agent responsible for managing and broadcasting to websocket clients. Uses :pobox to
   provide buffering and eventually drops messages if the backpressure isn't enough.
   """
   use Agent
+  require Logger
 
   @full_stream_url Application.compile_env!(:certstream, :full_stream_url)
   @domains_only_url Application.compile_env!(:certstream, :domains_only_url)
