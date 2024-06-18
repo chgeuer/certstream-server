@@ -78,7 +78,7 @@ defmodule Certstream.ClientManager do
       |> Enum.map(&remove_chain_from_cert/1)
       |> Enum.map(&remove_der_from_cert/1)
 
-    Certstream.CertifcateBuffer.add_certs_to_buffer(certificates_lite)
+    Certstream.CertificateBuffer.add_certs_to_buffer(certificates_lite)
 
     serialized_certificates_lite =
       certificates_lite

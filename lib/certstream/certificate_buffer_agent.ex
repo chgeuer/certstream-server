@@ -1,4 +1,4 @@
-defmodule Certstream.CertifcateBuffer do
+defmodule Certstream.CertificateBuffer do
   use Agent
   use Instruments
   require Logger
@@ -45,23 +45,15 @@ defmodule Certstream.CertifcateBuffer do
   def get_example_json do
     Agent.get(
       __MODULE__,
-      fn certificates ->
-        certificates
-        |> List.first()
-        |> Jason.encode!(pretty: true)
-      end
+      &Jason.encode!(List.first(&1), pretty: true)
     )
   end
 
-  @doc "Gets the latest 25 cetficiates seen by Certstream, indented with 4 spaces"
+  @doc "Gets the latest 25 certficates seen by Certstream, indented with 4 spaces"
   def get_latest_json do
     Agent.get(
       __MODULE__,
-      fn certificates ->
-        %{}
-        |> Map.put(:messages, certificates)
-        |> Jason.encode!(pretty: true)
-      end
+      &Jason.encode!(%{messages: &1}, pretty: true)
     )
   end
 end

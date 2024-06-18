@@ -5,7 +5,7 @@ defmodule Certstream.Mixfile do
     [
       app: :certstream,
       version: "1.6.0",
-      elixir: "~> 1.6",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
@@ -26,7 +26,7 @@ defmodule Certstream.Mixfile do
 
   def application do
     [
-      extra_applications: [:honeybadger, :logger],
+      extra_applications: [:logger, :observer, :wx, :runtime_tools],
       mod: {Certstream, []}
     ]
   end
@@ -36,11 +36,8 @@ defmodule Certstream.Mixfile do
       {:cowboy, "~> 2.12"},
       # Unfortunately {:easy_ssl, "~> 1.3"} on hex.pm doesn't have the commit https://github.com/CaliDog/EasySSL/commit/87ece602a3510ad60b7bba1755b6a32d5eb1141b
       {:easy_ssl, github: "CaliDog/EasySSL", branch: "master"},
-      {:honeybadger, "~> 0.21"},
-      # {:httpoison, "~> 2.2"},
       {:req, "~> 0.5.0"},
       {:instruments, "~> 1.1"},
-      {:jason, "~> 1.4"},
       {:number, "~> 1.0"},
       {:pobox, "~> 1.2"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

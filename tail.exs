@@ -25,13 +25,13 @@ defmodule WebSocketExample do
         "leaf_cert" => %{
           "all_domains" => _all_domains,
           "extensions" => _extensions,
-          "fingerprint" => fingerprint,
+          "fingerprint" => _fingerprint,
           "issuer" => %{"O" => issuer_o} = _issuer,
           "not_after" => _not_after,
           "not_before" => _not_before,
           "serial_number" => _serial_number,
           "signature_algorithm" => _signature_algoritm,
-          "subject" => _subject
+          "subject" => %{ "CN" => subject_cn }
         },
         "seen" => _seen,
         "source" => %{
@@ -41,8 +41,8 @@ defmodule WebSocketExample do
         "update_type" => _update_type
       }
     } = Jason.decode!(msg)
-    
-    IO.puts "#{source_name}: #{issuer_o} (#{fingerprint})"
+
+    IO.puts "#{source_name}: #{issuer_o} #{subject_cn}"
     {:ok, state}
   end
 

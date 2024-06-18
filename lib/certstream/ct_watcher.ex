@@ -8,13 +8,7 @@ defmodule Certstream.CTWatcher do
   use Instruments
   require Logger
 
-  def child_spec(log) do
-    %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [log]},
-      restart: :permanent
-    }
-  end
+  defstruct [:operator, :url, :batch_size, :tree_size, :processed_count]
 
   def start_and_link_watchers(name: supervisor_name) do
     Logger.info("Initializing CT Watchers...")
@@ -35,30 +29,31 @@ defmodule Certstream.CTWatcher do
     |> Enum.each(&DynamicSupervisor.start_child(supervisor_name, child_spec(&1)))
   end
 
+  def child_spec(log) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [log]},
+      restart: :permanent
+    }
+  end
+
   def start_link(log) do
     GenServer.start_link(
       __MODULE__,
-      %{:operator => log, :url => log["url"]}
+      %__MODULE__{operator: log, url: log["url"]}
     )
   end
 
-  def init(state) do
-    # Schedule the initial update to happen between 0 and 3 seconds from now in
-    # order to stagger when we hit these servers and avoid a thundering herd sort
-    # of issue upstream
-    # delay = :rand.uniform(30) / 10
-    # Logger.info(
-    #   "Worker #{inspect(self())} started with url #{state[:url]} and initial start time of #{delay} seconds from now."
-    # )
+  def init(%__MODULE__{} = state) do
+    Process.set_label("#{__MODULE__} for #{state.url}")
 
     {:ok, state, {:continue, :finish_init}}
   end
 
-  @spec handle_continue(:finish_init, any()) ::
-          {:noreply,
-           :ok
-           | %{:batch_size => non_neg_integer(), :tree_size => any(), optional(any()) => any()}}
-  def handle_continue(:finish_init, state) do
+  def handle_continue(:finish_init, %__MODULE__{} = state) do
+    # Schedule the initial update to happen between 0 and 3 seconds from now in
+    Process.sleep(:rand.uniform(3_000))
+
     # On first run attempt to fetch 512 certificates, and see what the API returns. However
     # many certs come back is what we should use as the batch size moving forward (at least
     # in theory).
@@ -67,18 +62,20 @@ defmodule Certstream.CTWatcher do
       try do
         %Req.Response{status: 200, body: %{"entries" => entries}} =
           req_new()
-          |> Req.get!(url: "#{state[:url]}ct/v1/get-entries?start=0&end=511")
+          |> Req.get!(url: "#{state.url}ct/v1/get-entries?start=0&end=511")
 
         batch_size = Enum.count(entries)
 
         Logger.info(
-          "Worker #{inspect(self())} with url #{state[:url]} found batch size of #{batch_size}."
+          "Worker #{inspect(self())} with url #{state.url} found batch size of #{batch_size}."
         )
 
-        state = Map.put(state, :batch_size, batch_size)
-
-        # On first run populate the state[:tree_size] key
-        state = Map.put(state, :tree_size, get_tree_size(state))
+        state = %__MODULE__{
+          state
+          | batch_size: batch_size,
+            # On first run populate the state[:tree_size] key
+            tree_size: get_tree_size(state)
+        }
 
         send(self(), :update)
 
@@ -93,10 +90,10 @@ defmodule Certstream.CTWatcher do
     {:noreply, state}
   end
 
-  def get_tree_size(state) do
+  def get_tree_size(%__MODULE__{} = state) do
     %Req.Response{status: 200, body: %{"tree_size" => tree_size}} =
       req_new()
-      |> Req.get!(url: "#{state[:url]}ct/v1/get-sth")
+      |> Req.get!(url: "#{state.url}ct/v1/get-sth")
 
     tree_size
   end
@@ -106,32 +103,35 @@ defmodule Certstream.CTWatcher do
     {:noreply, state}
   end
 
-  def handle_info(:update, state) do
+  def handle_info(:update, %__MODULE__{} = state) do
     Logger.debug(fn -> "Worker #{inspect(self())} got tick." end)
 
     current_tree_size = get_tree_size(state)
 
-    Logger.debug(fn -> "Tree size #{current_tree_size} - #{state[:tree_size]}" end)
+    Logger.debug(fn -> "Tree size #{current_tree_size} - #{state.tree_size}" end)
 
     state =
-      case current_tree_size > state[:tree_size] do
+      case current_tree_size > state.tree_size do
         true ->
           Logger.info(
-            "Worker #{inspect(self())} with url #{state[:url]} found #{current_tree_size - state[:tree_size]} certificates [#{state[:tree_size]} -> #{current_tree_size}]."
+            "Worker #{inspect(self())} with url #{state.url} found #{current_tree_size - state.tree_size} certificates [#{state[:tree_size]} -> #{current_tree_size}]."
           )
 
           cert_count = current_tree_size - state[:tree_size]
-          Instruments.increment("certstream.worker", cert_count, tags: ["url:#{state[:url]}"])
+          Instruments.increment("certstream.worker", cert_count, tags: ["url:#{state.url}"])
 
           Instruments.increment("certstream.aggregate_owners_count", cert_count,
-            tags: [~s(owner:#{state[:operator]["operator_name"]})]
+            tags: [~s(owner:#{state.operator["operator_name"]})]
           )
 
           broadcast_updates(state, current_tree_size)
 
-          state
-          |> Map.put(:tree_size, current_tree_size)
-          |> Map.update(:processed_count, 0, &(&1 + (current_tree_size - state[:tree_size])))
+          %__MODULE__{
+            state
+            | tree_size: current_tree_size,
+              processed_count: state.processed_count + current_tree_size - state.tree_size
+          }
+          |> IO.inspect(label: "State after update")
 
         false ->
           state
@@ -143,13 +143,13 @@ defmodule Certstream.CTWatcher do
   end
 
   defp broadcast_updates(state, current_size) do
-    certificate_count = current_size - state[:tree_size]
+    certificate_count = current_size - state.tree_size
     certificates = Enum.to_list((current_size - certificate_count)..(current_size - 1))
 
-    Logger.info("Certificate count - #{certificate_count} ")
+    # Logger.info("Certificate count - #{certificate_count} ")
 
     certificates
-    |> Enum.chunk_every(state[:batch_size])
+    |> Enum.chunk_every(state.batch_size)
     # Use Task.async_stream to have 5 concurrent requests to the CT server to fetch
     # our certificates without waiting on the previous chunk.
     |> Task.async_stream(&fetch_and_broadcast_certs(&1, state),
@@ -163,11 +163,32 @@ defmodule Certstream.CTWatcher do
   def fetch_and_broadcast_certs(ids, state) do
     Logger.debug(fn -> "Attempting to retrieve #{ids |> Enum.count()} entries" end)
 
-    %Req.Response{status: 200, body: %{"entries" => entries}} =
-      req_new()
-      |> Req.get!(
-        url: "#{state[:url]}ct/v1/get-entries?start=#{List.first(ids)}&end=#{List.last(ids)}"
-      )
+    {startIndex, endIndex} =
+      case ids do
+        [] -> {0, 1}
+        [single] -> {single, single + 1}
+        _ -> {List.first(ids), List.last(ids)}
+      end
+
+    url = "#{state.url}ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
+
+    entries =
+      case Req.get!(req_new(), url: url) do
+        %Req.Response{status: 200, body: %{"entries" => entries}} ->
+          entries
+
+        response ->
+          # https://doowon.github.io/2020/07/09/retrieving_certificates_from_certificate_transparency.html
+          #
+          # Failed to fetch entries from https://ct2025-b.trustasia.com/log2025b/ct/v1/get-entries?start=1101396&end=1101396
+          # IDs: [1101396]
+          # %Req.Response{status: 400, body: "Bad Request need tree size: 1101397 to get leaves but only got: 1101396"}
+          Logger.error(fn ->
+            "Failed to fetch entries from #{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
+          end)
+
+          []
+      end
 
     entries
     |> Enum.zip(ids)
@@ -212,6 +233,7 @@ defmodule Certstream.CTWatcher do
 
   defp req_new() do
     Req.new(
+      # https://hexdocs.pm/req/Req.Steps.html#retry/1
       retry: :safe_transient,
       retry_delay: 10_000,
       redirect: true,
@@ -219,21 +241,25 @@ defmodule Certstream.CTWatcher do
       connect_options: [
         transport_opts: [
           timeout: 10_000,
-          versions: [
-            # :"tlsv1.3",
-            :"tlsv1.2"
-          ]
+          versions: tls_versions()
         ]
       ]
     )
     |> Req.Request.put_header("User-Agent", user_agent())
   end
 
+  defp tls_versions do
+    case Application.fetch_env(:certstream, :tls_versions) do
+      {:ok, other} -> other
+      :error -> [:"tlsv1.2"]
+    end
+  end
+
   # Allow the user agent to be overridden in the config, or use a default Certstream identifier
   defp user_agent do
-    case Application.fetch_env!(:certstream, :user_agent) do
-      :default -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
-      other -> other
+    case Application.fetch_env(:certstream, :user_agent) do
+      {:ok, val} -> val
+      :error -> "Certstream Server v#{Application.spec(:certstream, :vsn)}"
     end
   end
 end

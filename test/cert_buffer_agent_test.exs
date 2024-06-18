@@ -1,8 +1,8 @@
-defmodule CertifcateBufferTest do
+defmodule CertificateBuffer do
   use ExUnit.Case
 
   test "ETS table is created and destroyed properly" do
-    {:ok, buffer_pid} = Certstream.CertifcateBuffer.start_link([])
+    {:ok, buffer_pid} = Certstream.CertificateBuffer.start_link([])
     Process.unlink(buffer_pid)
 
     ref = Process.monitor(buffer_pid)
@@ -21,7 +21,7 @@ defmodule CertifcateBufferTest do
     end
 
     # Start agent again
-    {:ok, buffer_pid} = Certstream.CertifcateBuffer.start_link([])
+    {:ok, buffer_pid} = Certstream.CertificateBuffer.start_link([])
     Process.unlink(buffer_pid)
 
     # Assert it re-created the table

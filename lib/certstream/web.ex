@@ -20,8 +20,8 @@ defmodule Certstream.WebsocketServer do
     res =
       :cowboy_req.reply(
         200,
-        %{~c"content-type" => ~c"application/json"},
-        Certstream.CertifcateBuffer.get_example_json(),
+        %{~c"Content-Type" => ~c"application/json"},
+        Certstream.CertificateBuffer.get_example_json(),
         req
       )
 
@@ -33,8 +33,8 @@ defmodule Certstream.WebsocketServer do
     res =
       :cowboy_req.reply(
         200,
-        %{~c"content-type" => ~c"application/json"},
-        Certstream.CertifcateBuffer.get_latest_json(),
+        %{~c"Content-Type" => ~c"application/json"},
+        Certstream.CertificateBuffer.get_latest_json(),
         req
       )
 
@@ -43,30 +43,26 @@ defmodule Certstream.WebsocketServer do
 
   # /stats handler
   def init(req, [:stats]) do
-    processed_certs = Certstream.CertifcateBuffer.get_processed_certificates()
-    client_json = Certstream.ClientManager.get_clients_json()
-
-    workers =
-      WatcherSupervisor
-      |> DynamicSupervisor.which_children()
-      |> Enum.reduce(%{}, fn {:undefined, pid, :worker, _module}, acc ->
-        state = :sys.get_state(pid)
-        Map.put(acc, state[:url], state[:processed_count] || 0)
-      end)
-
-    response =
-      %{}
-      |> Map.put(:processed_certificates, processed_certs)
-      |> Map.put(:current_users, client_json)
-      |> Map.put(:workers, workers)
-      |> Jason.encode!()
-      |> Jason.Formatter.pretty_print()
+    response = %{
+      processed_certificates: Certstream.CertificateBuffer.get_processed_certificates(),
+      current_users: Certstream.ClientManager.get_clients_json()
+      # workers:
+      #   WatcherSupervisor
+      #   |> DynamicSupervisor.which_children()
+      #   |> Enum.reduce(%{}, fn {_, pid, _, _}, acc ->
+      #     case :sys.get_state(pid) do
+      #       :ok -> acc
+      #       %{url: url} = state ->
+      #         acc |> Map.put(url, Map.get(state, :processed_count, 0))
+      #     end
+      #   end)
+    }
 
     res =
       :cowboy_req.reply(
         200,
         %{~c"content-type" => ~c"application/json"},
-        response,
+        Jason.encode!(response, pretty: true),
         req
       )
 
