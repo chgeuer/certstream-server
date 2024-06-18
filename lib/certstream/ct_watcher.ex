@@ -8,15 +8,16 @@ defmodule Certstream.CTWatcher do
   use Instruments
   require Logger
 
-  defstruct [:operator, :url, :batch_size, :tree_size, :processed_count]
+  defstruct req: nil, operator: nil, url: nil, batch_size: nil, tree_size: nil, processed_count: 0
 
   def start_and_link_watchers(name: supervisor_name) do
     Logger.info("Initializing CT Watchers...")
 
+    req = req_new()
+
     # Fetch all CT lists
     %Req.Response{status: 200, body: %{"operators" => operators}} =
-      req_new()
-      |> Req.get!(url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json")
+      Req.get!(req, url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json")
 
     operators
     |> Enum.flat_map(fn %{"logs" => logs, "name" => operator_name} ->
@@ -26,22 +27,28 @@ defmodule Certstream.CTWatcher do
       %{"state" => %{"rejected" => _}} -> false
       _ -> true
     end)
-    |> Enum.each(&DynamicSupervisor.start_child(supervisor_name, child_spec(&1)))
+    |> Enum.each(fn log ->
+      state = %__MODULE__{
+        operator: log,
+        req: req |> Req.merge(base_url: log["url"]),
+        url: log["url"]
+      }
+
+      DynamicSupervisor.start_child(supervisor_name, child_spec(state))
+    end)
   end
 
-  def child_spec(log) do
+  def child_spec(state) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start_link, [log]},
-      restart: :permanent
+      start: {__MODULE__, :start_link, [state]},
+      # restart: :permanent
+      restart: :transient
     }
   end
 
-  def start_link(log) do
-    GenServer.start_link(
-      __MODULE__,
-      %__MODULE__{operator: log, url: log["url"]}
-    )
+  def start_link(state) do
+    GenServer.start_link(__MODULE__, state)
   end
 
   def init(%__MODULE__{} = state) do
@@ -58,53 +65,57 @@ defmodule Certstream.CTWatcher do
     # many certs come back is what we should use as the batch size moving forward (at least
     # in theory).
 
-    state =
-      try do
-        %Req.Response{status: 200, body: %{"entries" => entries}} =
-          req_new()
-          |> Req.get!(url: "#{state.url}ct/v1/get-entries?start=0&end=511")
-
+    case Req.get(state.req, url: "ct/v1/get-entries?start=0&end=511") do
+      {:ok, %Req.Response{status: 200, body: %{"entries" => entries}}} ->
         batch_size = Enum.count(entries)
 
         Logger.info(
-          "Worker #{inspect(self())} with url #{state.url} found batch size of #{batch_size}."
+          "#{:proc_lib.get_label(self())} with url #{state.url} found batch size of #{batch_size}."
         )
 
         state = %__MODULE__{
           state
           | batch_size: batch_size,
-            # On first run populate the state[:tree_size] key
+            # On first run populate the state.tree_size key
             tree_size: get_tree_size(state)
         }
 
         send(self(), :update)
 
-        state
-      rescue
-        e ->
-          Logger.warning(
-            "Worker #{inspect(self())} with state #{inspect(state)} blew up because #{inspect(e)}"
-          )
-      end
+        {:noreply, state}
 
-    {:noreply, state}
+      {:error, %Req.TransportError{reason: :nxdomain}} ->
+        Logger.error("#{:proc_lib.get_label(self())} terminating cause domain not found")
+
+        {:stop, :normal, state}
+
+      {:ok, %Req.Response{status: 404}} ->
+        Logger.error("#{:proc_lib.get_label(self())} 404 not found")
+
+        {:noreply, state}
+    end
+
+    # rescue
+    #   e ->
+    #     Logger.warning("#{:proc_lib.get_label(self())} blew up because #{inspect(e)}")
+    #     {:noreply, state}
+    # end
   end
 
   def get_tree_size(%__MODULE__{} = state) do
     %Req.Response{status: 200, body: %{"tree_size" => tree_size}} =
-      req_new()
-      |> Req.get!(url: "#{state.url}ct/v1/get-sth")
+      Req.get!(state.req, url: "ct/v1/get-sth")
 
     tree_size
   end
 
   def handle_info({:ssl_closed, _}, state) do
-    Logger.info("Worker #{inspect(self())} got :ssl_closed message. Ignoring.")
+    Logger.info("#{:proc_lib.get_label(self())} got :ssl_closed message. Ignoring.")
     {:noreply, state}
   end
 
   def handle_info(:update, %__MODULE__{} = state) do
-    Logger.debug(fn -> "Worker #{inspect(self())} got tick." end)
+    Logger.debug(fn -> "#{:proc_lib.get_label(self())} got tick." end)
 
     current_tree_size = get_tree_size(state)
 
@@ -114,10 +125,10 @@ defmodule Certstream.CTWatcher do
       case current_tree_size > state.tree_size do
         true ->
           Logger.info(
-            "Worker #{inspect(self())} with url #{state.url} found #{current_tree_size - state.tree_size} certificates [#{state[:tree_size]} -> #{current_tree_size}]."
+            "#{:proc_lib.get_label(self())} with url #{state.url} found #{current_tree_size - state.tree_size} certificates [#{state.tree_size} -> #{current_tree_size}]."
           )
 
-          cert_count = current_tree_size - state[:tree_size]
+          cert_count = current_tree_size - state.tree_size
           Instruments.increment("certstream.worker", cert_count, tags: ["url:#{state.url}"])
 
           Instruments.increment("certstream.aggregate_owners_count", cert_count,
@@ -131,7 +142,6 @@ defmodule Certstream.CTWatcher do
             | tree_size: current_tree_size,
               processed_count: state.processed_count + current_tree_size - state.tree_size
           }
-          |> IO.inspect(label: "State after update")
 
         false ->
           state
@@ -170,10 +180,8 @@ defmodule Certstream.CTWatcher do
         _ -> {List.first(ids), List.last(ids)}
       end
 
-    url = "#{state.url}ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
-
     entries =
-      case Req.get!(req_new(), url: url) do
+      case Req.get!(state.req, url: "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}") do
         %Req.Response{status: 200, body: %{"entries" => entries}} ->
           entries
 
@@ -199,11 +207,11 @@ defmodule Certstream.CTWatcher do
         :cert_index => cert_index,
         :seen => :os.system_time(:microsecond) / 1_000_000,
         :source => %{
-          :url => state[:operator]["url"],
-          :name => state[:operator]["description"]
+          :url => state.operator["url"],
+          :name => state.operator["description"]
         },
         :cert_link =>
-          "#{state[:operator]["url"]}ct/v1/get-entries?start=#{cert_index}&end=#{cert_index}"
+          "#{state.operator["url"]}ct/v1/get-entries?start=#{cert_index}&end=#{cert_index}"
       })
     end)
     |> Certstream.ClientManager.broadcast_to_clients()
@@ -231,7 +239,7 @@ defmodule Certstream.CTWatcher do
     Process.send_after(self(), :update, trunc(:timer.seconds(seconds)))
   end
 
-  defp req_new() do
+  defp req_new do
     Req.new(
       # https://hexdocs.pm/req/Req.Steps.html#retry/1
       retry: :safe_transient,
