@@ -1,17 +1,17 @@
 defmodule Certstream.CTWatcher do
   @moduledoc """
-  The GenServer responsible for watching a specific CT server. It ticks every 15 seconds via
-  `schedule_update`, and uses Process.send_after to trigger new requests to see if there are
-  any certificates to fetch and broadcast.
+  The GenServer responsible for watching a specific CT server.
+
+  It ticks every 10 seconds and regularly checks to see if there are any certificates to fetch and broadcast.
   """
   use GenServer
   use Instruments
   require Logger
 
-  defstruct req: nil, operator: nil, url: nil, batch_size: nil, tree_size: nil, processed_count: 0
+  defstruct req: nil, update_interval_seconds: 10, operator: nil, url: nil, batch_size: nil, tree_size: nil, processed_count: 0
 
   def start_and_link_watchers(name: supervisor_name) do
-    Logger.info("Initializing CT Watchers...")
+    Logger.info("Initializing #{__MODULE__}...")
 
     req = req_new()
 
@@ -30,6 +30,7 @@ defmodule Certstream.CTWatcher do
     |> Enum.each(fn log ->
       state = %__MODULE__{
         operator: log,
+        update_interval_seconds: 10, # 10 seconds
         req: req |> Req.merge(base_url: log["url"]),
         url: log["url"]
       }
@@ -59,7 +60,7 @@ defmodule Certstream.CTWatcher do
 
   def handle_continue(:finish_init, %__MODULE__{} = state) do
     # Schedule the initial update to happen between 0 and 3 seconds from now in
-    Process.sleep(:rand.uniform(3_000))
+    # Process.sleep(:rand.uniform(3_000))
 
     # On first run attempt to fetch 512 certificates, and see what the API returns. However
     # many certs come back is what we should use as the batch size moving forward (at least
@@ -85,14 +86,12 @@ defmodule Certstream.CTWatcher do
         {:noreply, state}
 
       {:error, %Req.TransportError{reason: :nxdomain}} ->
-        Logger.error("#{:proc_lib.get_label(self())} terminating cause domain not found")
-
+        Logger.error("#{__MODULE__} for #{state.url} terminating cause hostname not found (:nxdomain)")
         {:stop, :normal, state}
 
       {:ok, %Req.Response{status: 404}} ->
-        Logger.error("#{:proc_lib.get_label(self())} 404 not found")
-
-        {:noreply, state}
+        Logger.error("#{__MODULE__} for #{state.url} terminating because not found (HTTP 404)")
+        {:stop, :normal, state}
     end
 
     # rescue
@@ -147,7 +146,7 @@ defmodule Certstream.CTWatcher do
           state
       end
 
-    schedule_update()
+    Process.send_after(self(), :update, trunc(:timer.seconds(state.update_interval_seconds)))
 
     {:noreply, state}
   end
@@ -180,8 +179,9 @@ defmodule Certstream.CTWatcher do
         _ -> {List.first(ids), List.last(ids)}
       end
 
+    url = "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
     entries =
-      case Req.get!(state.req, url: "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}") do
+      case Req.get!(state.req, url: url) do
         %Req.Response{status: 200, body: %{"entries" => entries}} ->
           entries
 
@@ -192,7 +192,7 @@ defmodule Certstream.CTWatcher do
           # IDs: [1101396]
           # %Req.Response{status: 400, body: "Bad Request need tree size: 1101397 to get leaves but only got: 1101396"}
           Logger.error(fn ->
-            "Failed to fetch entries from #{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
+            "Failed to fetch entries from #{state.url}#{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
           end)
 
           []
@@ -228,15 +228,6 @@ defmodule Certstream.CTWatcher do
 
       fetch_and_broadcast_certs(ids |> Enum.drop(Enum.count(entries)), state)
     end
-  end
-
-  # Default to 10 second ticks
-  defp schedule_update(seconds \\ 10) do
-    # Note, we need to use Kernel.trunc() here to guarentee this is an integer
-    # because :timer.seconds returns an integer or a float depending on the
-    # type put in, :erlang.send_after seems to hang with floats for some
-    # reason :(
-    Process.send_after(self(), :update, trunc(:timer.seconds(seconds)))
   end
 
   defp req_new do
