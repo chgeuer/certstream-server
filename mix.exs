@@ -27,13 +27,15 @@ defmodule Certstream.Mixfile do
   def application do
     [
       extra_applications: [:logger, :observer, :wx, :runtime_tools],
-      mod: {Certstream, []}
+      mod: {Certstream.Application, []}
     ]
   end
 
   defp deps do
     [
-      {:cowboy, "~> 2.12"},
+      {:bandit, "~> 1.6"},
+      {:websock_adapter, "~> 0.5.8"},
+      {:websock, "~> 0.5.3"},
       # Unfortunately {:easy_ssl, "~> 1.3"} on hex.pm doesn't have the commit https://github.com/CaliDog/EasySSL/commit/87ece602a3510ad60b7bba1755b6a32d5eb1141b
       {:easy_ssl, github: "CaliDog/EasySSL", branch: "master"},
       {:req, "~> 0.5.8"},
