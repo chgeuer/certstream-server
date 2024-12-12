@@ -36,7 +36,7 @@ defmodule Certstream.Mixfile do
       {:cowboy, "~> 2.12"},
       # Unfortunately {:easy_ssl, "~> 1.3"} on hex.pm doesn't have the commit https://github.com/CaliDog/EasySSL/commit/87ece602a3510ad60b7bba1755b6a32d5eb1141b
       {:easy_ssl, github: "CaliDog/EasySSL", branch: "master"},
-      {:req, "~> 0.5.0"},
+      {:req, "~> 0.5.8"},
       {:instruments, "~> 1.1"},
       {:number, "~> 1.0"},
       {:pobox, "~> 1.2"},

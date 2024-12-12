@@ -8,7 +8,13 @@ defmodule Certstream.CTWatcher do
   use Instruments
   require Logger
 
-  defstruct req: nil, update_interval_seconds: 10, operator: nil, url: nil, batch_size: nil, tree_size: nil, processed_count: 0
+  defstruct req: nil,
+            update_interval_seconds: 10,
+            operator: nil,
+            url: nil,
+            batch_size: nil,
+            tree_size: nil,
+            processed_count: 0
 
   def start_and_link_watchers(name: supervisor_name) do
     Logger.info("Initializing #{__MODULE__}...")
@@ -30,7 +36,8 @@ defmodule Certstream.CTWatcher do
     |> Enum.each(fn log ->
       state = %__MODULE__{
         operator: log,
-        update_interval_seconds: 10, # 10 seconds
+        # 10 seconds
+        update_interval_seconds: 10,
         req: req |> Req.merge(base_url: log["url"]),
         url: log["url"]
       }
@@ -86,7 +93,10 @@ defmodule Certstream.CTWatcher do
         {:noreply, state}
 
       {:error, %Req.TransportError{reason: :nxdomain}} ->
-        Logger.error("#{__MODULE__} for #{state.url} terminating cause hostname not found (:nxdomain)")
+        Logger.error(
+          "#{__MODULE__} for #{state.url} terminating cause hostname not found (:nxdomain)"
+        )
+
         {:stop, :normal, state}
 
       {:ok, %Req.Response{status: 404}} ->
@@ -180,6 +190,7 @@ defmodule Certstream.CTWatcher do
       end
 
     url = "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
+
     entries =
       case Req.get!(state.req, url: url) do
         %Req.Response{status: 200, body: %{"entries" => entries}} ->
