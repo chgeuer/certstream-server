@@ -325,10 +325,24 @@ defmodule Certstream.CTWatcher do
 
     req = req_new()
 
-    # Fetch all CT lists
-    %Req.Response{status: 200, body: %{"operators" => operators}} =
-      Req.get!(req, url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json")
+    # Fetch all CT lists with a longer timeout
+    case Req.get(req,
+           url: "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json",
+           retry: :safe_transient,
+           max_retries: 3,
+           connect_options: [timeout: 30_000]
+         ) do
+      {:ok, %Req.Response{status: 200, body: %{"operators" => operators}}} ->
+        process_operators(operators, req, supervisor_name)
 
+      error ->
+        Logger.error("Failed to fetch CT log list: #{inspect(error)}")
+        # Return empty list to allow application to continue starting
+        []
+    end
+  end
+
+  defp process_operators(operators, req, supervisor_name) do
     operators
     |> Enum.flat_map(fn %{"logs" => logs, "name" => operator_name} ->
       Enum.map(logs, &Map.put(&1, "operator_name", operator_name))
@@ -338,16 +352,61 @@ defmodule Certstream.CTWatcher do
       _ -> true
     end)
     |> Enum.each(fn log ->
-      state = %__MODULE__{
-        operator: log,
-        # 10 seconds
-        update_interval_seconds: 10,
-        req: req |> Req.merge(base_url: log["url"]),
-        url: log["url"]
-      }
+      # Start each watcher in a separate task to prevent one failure from blocking others
+      Task.start(fn ->
+        case verify_log_availability(log["url"], req) do
+          true ->
+            state = %__MODULE__{
+              operator: log,
+              update_interval_seconds: 10,
+              req: req |> Req.merge(base_url: log["url"]),
+              url: log["url"]
+            }
 
-      DynamicSupervisor.start_child(supervisor_name, child_spec(state))
+            case DynamicSupervisor.start_child(supervisor_name, child_spec(state)) do
+              {:ok, _pid} ->
+                Logger.info("Started watcher for #{log["url"]}")
+
+              {:error, error} ->
+                Logger.warning("Failed to start watcher for #{log["url"]}: #{inspect(error)}")
+            end
+
+          false ->
+            Logger.info("Skipping inactive log: #{log["url"]}")
+        end
+      end)
     end)
+  end
+
+  defp verify_log_availability(url, req) do
+    merged_req =
+      req
+      |> Req.merge(
+        base_url: url,
+        connect_options: [timeout: 10_000],
+        # Don't retry for verification
+        retry: false
+      )
+
+    try do
+      case Req.get(merged_req, url: "ct/v1/get-sth") do
+        {:ok, %Req.Response{status: 200}} ->
+          true
+
+        {:ok, _} ->
+          false
+
+        {:error, %Req.TransportError{reason: :nxdomain}} ->
+          false
+
+        {:error, _} ->
+          false
+      end
+    rescue
+      e ->
+        Logger.debug("Error verifying #{url}: #{inspect(e)}")
+        false
+    end
   end
 
   def child_spec(state) do
