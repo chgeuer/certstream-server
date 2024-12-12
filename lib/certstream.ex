@@ -271,10 +271,44 @@ defmodule Certstream.CTParser do
     ]
   end
 
+  defp format_crl_point({:DistributionPoint, {:fullName, points}, _, _}) do
+    points
+    |> Enum.map(fn
+      {:uniformResourceIdentifier, url} ->
+        to_string(url)
+
+      {:directoryName, _} ->
+        # Skip directory names for now
+        nil
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp format_crl_point(_), do: nil
+
+  # Then use this in your certificate parsing logic where you handle extensions:
   defp parse_certificate(certificate_data, type) do
     case type do
-      :leaf -> EasySSL.parse_der(certificate_data, serialize: true, all_domains: true)
-      :chain -> EasySSL.parse_der(certificate_data, serialize: true)
+      :leaf ->
+        cert = EasySSL.parse_der(certificate_data, serialize: true, all_domains: true)
+        # Handle CRL points if present in extensions
+        cert =
+          case cert do
+            %{extensions: %{crlDistributionPoints: points}} when is_tuple(points) ->
+              put_in(cert, [:extensions, :crlDistributionPoints], format_crl_point(points))
+
+            _ ->
+              cert
+          end
+
+        cert
+
+      :chain ->
+        EasySSL.parse_der(certificate_data, serialize: true)
     end
   end
 
@@ -524,83 +558,163 @@ defmodule Certstream.CTWatcher do
     {:noreply, state}
   end
 
-  defp broadcast_updates(state, current_size) do
+  # defp broadcast_updates(state, current_size) do
+  #   certificate_count = current_size - state.tree_size
+  #   certificates = Enum.to_list((current_size - certificate_count)..(current_size - 1))
+  #
+  #   # Logger.info("Certificate count - #{certificate_count} ")
+  #
+  #   certificates
+  #   |> Enum.chunk_every(state.batch_size)
+  #   # Use Task.async_stream to have 5 concurrent requests to the CT server to fetch
+  #   # our certificates without waiting on the previous chunk.
+  #   |> Task.async_stream(&fetch_and_broadcast_certs(&1, state),
+  #     max_concurrency: 5,
+  #     timeout: :timer.seconds(600)
+  #   )
+  #   # Nop to just pull the requests through async_stream
+  #   |> Enum.to_list()
+  # end
+  #
+  # def fetch_and_broadcast_certs(ids, state) do
+  #   Logger.debug(fn -> "Attempting to retrieve #{ids |> Enum.count()} entries" end)
+  #
+  #   {startIndex, endIndex} =
+  #     case ids do
+  #       [] -> {0, 1}
+  #       [single] -> {single, single + 1}
+  #       _ -> {List.first(ids), List.last(ids)}
+  #     end
+  #
+  #   url = "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
+  #
+  #   entries =
+  #     case Req.get!(state.req, url: url) do
+  #       %Req.Response{status: 200, body: %{"entries" => entries}} ->
+  #         entries
+  #
+  #       response ->
+  #         # https://doowon.github.io/2020/07/09/retrieving_certificates_from_certificate_transparency.html
+  #         #
+  #         # Failed to fetch entries from https://ct2025-b.trustasia.com/log2025b/ct/v1/get-entries?start=1101396&end=1101396
+  #         # IDs: [1101396]
+  #         # %Req.Response{status: 400, body: "Bad Request need tree size: 1101397 to get leaves but only got: 1101396"}
+  #         Logger.error(fn ->
+  #           "Failed to fetch entries from #{state.url}#{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
+  #         end)
+  #
+  #         []
+  #     end
+  #
+  #   entries
+  #   |> Enum.zip(ids)
+  #   |> Enum.map(fn {entry, cert_index} ->
+  #     entry
+  #     |> Certstream.CTParser.parse_entry()
+  #     |> Map.merge(%{
+  #       :cert_index => cert_index,
+  #       :seen => :os.system_time(:microsecond) / 1_000_000,
+  #       :source => %{
+  #         :url => state.operator["url"],
+  #         :name => state.operator["description"]
+  #       },
+  #       :cert_link =>
+  #         "#{state.operator["url"]}ct/v1/get-entries?start=#{cert_index}&end=#{cert_index}"
+  #     })
+  #   end)
+  #   |> Certstream.ClientManager.broadcast_to_clients()
+  #
+  #   entry_count = Enum.count(entries)
+  #   batch_count = Enum.count(ids)
+  #
+  #   # If we have *unequal* counts the API has returned less certificates than our initial batch
+  #   # heuristic. Drop the entires we retrieved and recurse to fetch others.
+  #   if entry_count != batch_count do
+  #     Logger.debug(fn ->
+  #       "We didn't retrieve all the entries for this batch, fetching missing #{batch_count - entry_count} entries"
+  #     end)
+  #
+  #     fetch_and_broadcast_certs(ids |> Enum.drop(Enum.count(entries)), state)
+  #   end
+  # end
+
+  def broadcast_updates(state, current_size) do
     certificate_count = current_size - state.tree_size
     certificates = Enum.to_list((current_size - certificate_count)..(current_size - 1))
 
-    # Logger.info("Certificate count - #{certificate_count} ")
-
     certificates
     |> Enum.chunk_every(state.batch_size)
-    # Use Task.async_stream to have 5 concurrent requests to the CT server to fetch
-    # our certificates without waiting on the previous chunk.
-    |> Task.async_stream(&fetch_and_broadcast_certs(&1, state),
+    |> Task.async_stream(
+      &fetch_and_broadcast_certs(&1, state),
       max_concurrency: 5,
-      timeout: :timer.seconds(600)
+      timeout: :timer.seconds(600),
+      # Add this to handle timeouts gracefully
+      on_timeout: :kill_task
     )
-    # Nop to just pull the requests through async_stream
-    |> Enum.to_list()
+    |> Enum.reduce_while([], fn
+      {:ok, result}, acc ->
+        {:cont, [result | acc]}
+
+      {:exit, :timeout}, acc ->
+        Logger.warning("Timeout while processing certificates from #{state.url}")
+        # Continue processing despite timeout
+        {:cont, acc}
+    end)
   end
 
+  # Also modify fetch_and_broadcast_certs to handle failures more gracefully
   def fetch_and_broadcast_certs(ids, state) do
     Logger.debug(fn -> "Attempting to retrieve #{ids |> Enum.count()} entries" end)
 
-    {startIndex, endIndex} =
-      case ids do
-        [] -> {0, 1}
-        [single] -> {single, single + 1}
-        _ -> {List.first(ids), List.last(ids)}
+    try do
+      {startIndex, endIndex} =
+        case ids do
+          [] -> {0, 1}
+          [single] -> {single, single + 1}
+          _ -> {List.first(ids), List.last(ids)}
+        end
+
+      url = "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
+
+      # Add timeout
+      entries =
+        case Req.get(state.req, url: url, receive_timeout: 30_000) do
+          {:ok, %Req.Response{status: 200, body: %{"entries" => entries}}} ->
+            entries
+
+          response ->
+            Logger.error(fn ->
+              "Failed to fetch entries from #{state.url}#{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
+            end)
+
+            []
+        end
+
+      # Process entries if we got any
+      unless Enum.empty?(entries) do
+        entries
+        |> Enum.zip(ids)
+        |> Enum.map(fn {entry, cert_index} ->
+          entry
+          |> Certstream.CTParser.parse_entry()
+          |> Map.merge(%{
+            :cert_index => cert_index,
+            :seen => :os.system_time(:microsecond) / 1_000_000,
+            :source => %{
+              :url => state.operator["url"],
+              :name => state.operator["description"]
+            },
+            :cert_link =>
+              "#{state.operator["url"]}ct/v1/get-entries?start=#{cert_index}&end=#{cert_index}"
+          })
+        end)
+        |> Certstream.ClientManager.broadcast_to_clients()
       end
-
-    url = "ct/v1/get-entries?start=#{startIndex}&end=#{endIndex}"
-
-    entries =
-      case Req.get!(state.req, url: url) do
-        %Req.Response{status: 200, body: %{"entries" => entries}} ->
-          entries
-
-        response ->
-          # https://doowon.github.io/2020/07/09/retrieving_certificates_from_certificate_transparency.html
-          #
-          # Failed to fetch entries from https://ct2025-b.trustasia.com/log2025b/ct/v1/get-entries?start=1101396&end=1101396
-          # IDs: [1101396]
-          # %Req.Response{status: 400, body: "Bad Request need tree size: 1101397 to get leaves but only got: 1101396"}
-          Logger.error(fn ->
-            "Failed to fetch entries from #{state.url}#{url} (IDs: #{inspect(ids)}: #{inspect(response)}"
-          end)
-
-          []
-      end
-
-    entries
-    |> Enum.zip(ids)
-    |> Enum.map(fn {entry, cert_index} ->
-      entry
-      |> Certstream.CTParser.parse_entry()
-      |> Map.merge(%{
-        :cert_index => cert_index,
-        :seen => :os.system_time(:microsecond) / 1_000_000,
-        :source => %{
-          :url => state.operator["url"],
-          :name => state.operator["description"]
-        },
-        :cert_link =>
-          "#{state.operator["url"]}ct/v1/get-entries?start=#{cert_index}&end=#{cert_index}"
-      })
-    end)
-    |> Certstream.ClientManager.broadcast_to_clients()
-
-    entry_count = Enum.count(entries)
-    batch_count = Enum.count(ids)
-
-    # If we have *unequal* counts the API has returned less certificates than our initial batch
-    # heuristic. Drop the entires we retrieved and recurse to fetch others.
-    if entry_count != batch_count do
-      Logger.debug(fn ->
-        "We didn't retrieve all the entries for this batch, fetching missing #{batch_count - entry_count} entries"
-      end)
-
-      fetch_and_broadcast_certs(ids |> Enum.drop(Enum.count(entries)), state)
+    rescue
+      e ->
+        Logger.error("Error processing certificates: #{inspect(e)}")
+        # Return empty list on error
+        []
     end
   end
 
